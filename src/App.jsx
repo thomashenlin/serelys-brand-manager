@@ -814,21 +814,23 @@ NOTES: [1 phrase]`}]);
       setMockupStep({pct:25, label: t("Claude rédige le prompt image…","Claude erstellt den Bild-Prompt…")});
       const imagenPrompt = await generateImagenPrompt(artDirection);
 
-      // Step 2 — Gemini Imagen 3 génère la photo
-      setMockupStep({pct:60, label: t("Imagen 3 génère le visuel…","Imagen 3 generiert das Visual…")});
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${GEMINI_KEY}`;
+      // Step 2 — Gemini 2.0 Flash génère l'image
+      setMockupStep({pct:60, label: t("Gemini génère le visuel…","Gemini generiert das Visual…")});
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key=${GEMINI_KEY}`;
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          instances: [{ prompt: imagenPrompt }],
-          parameters: { sampleCount: 1, aspectRatio: "16:9" }
+          contents: [{ parts: [{ text: imagenPrompt }] }],
+          generationConfig: { responseModalities: ["TEXT", "IMAGE"] }
         })
       });
       const data = await res.json();
       if (data.error) throw new Error(`Gemini : ${data.error.message}`);
-      const imgB64 = data.predictions?.[0]?.bytesBase64Encoded;
-      if (!imgB64) throw new Error(t("Aucune image retournée. Vérifiez votre clé Gemini et l'accès à Imagen 3.","Kein Bild zurückgegeben. Bitte Gemini-Schlüssel prüfen."));
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const imgPart = parts.find(p => p.inlineData?.mimeType?.startsWith("image/"));
+      if (!imgPart) throw new Error(t("Aucune image retournée par Gemini. Vérifiez votre clé API.","Kein Bild von Gemini zurückgegeben."));
+      const imgB64 = imgPart.inlineData.data;
 
       progressRef.current.active = false;
       setMockupStep({pct:100, label: t("Visuel créé ✓","Visual erstellt ✓")});
