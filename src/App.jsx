@@ -814,15 +814,15 @@ NOTES: [1 phrase]`}]);
       setMockupStep({pct:25, label: t("Claude rédige le prompt image…","Claude erstellt den Bild-Prompt…")});
       const imagenPrompt = await generateImagenPrompt(artDirection);
 
-      // Step 2 — Gemini 2.0 Flash génère l'image
+      // Step 2 — Gemini génère l'image (modèle natif image generation)
       setMockupStep({pct:60, label: t("Gemini génère le visuel…","Gemini generiert das Visual…")});
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key=${GEMINI_KEY}`;
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${GEMINI_KEY}`;
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: imagenPrompt }] }],
-          generationConfig: { responseModalities: ["TEXT", "IMAGE"] }
+          generationConfig: { responseModalities: ["IMAGE", "TEXT"] }
         })
       });
       const data = await res.json();
