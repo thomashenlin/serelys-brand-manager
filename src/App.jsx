@@ -533,31 +533,38 @@ export default function App() {
 
   // ── Prompt enrichi avec tous les assets texte ───────────────────────────────
   async function generateEnrichedPrompt(artDirection, textContext) {
-    const SYSTEM = `You are the senior art director and brand strategist for Sérélys® MENO.
-You write precise Gemini image generation prompts that are deeply on-brand.
-Return ONLY the final image prompt. No explanation, no markdown, no headers.`;
+    const SYSTEM = `You are an expert at writing Gemini image generation prompts for pharmaceutical advertising.
+Your output is ONLY a clean paragraph of natural English describing the scene to generate.
+NEVER use markdown, bullet points, asterisks, headers, brand names, or any text that could appear in the generated image.
+NEVER mention product names, company names, or drug names — Gemini will render them as text overlays.
+Focus purely on the visual scene: lighting, colors, composition, mood, subject, setting.`;
 
-    const prompt = `Generate a Gemini image generation prompt for a Sérélys® MENO advertisement.
+    const prompt = `Write a Gemini image generation prompt based on this creative direction and brand context.
 
-CREATIVE DIRECTION:
-${artDirection.slice(0, 600)}
+CREATIVE DIRECTION (extract the visual scene concept only — ignore text, copy, headlines):
+${artDirection.replace(/\*\*/g,"").replace(/#{1,6}\s/g,"").slice(0, 600)}
 
-BRAND CONTEXT (use to inform style, tone, claims, visual language):
-${textContext || "Sérélys® MENO — complément alimentaire non hormonal, certifié cliniquement, vendu en pharmacie suisse."}
+BRAND CONTEXT (use to inform colors, mood, visual style — do NOT include any names or claims as text):
+${textContext ? textContext.slice(0, 1500) : "Premium Swiss pharmaceutical brand. Soft lavender and white palette. Elegant, warm, empowering mood. Women 45–55 years old."}
 
-IMAGE RULES (mandatory):
-- Photorealistic, premium Swiss pharmaceutical advertising
-- Woman 45–55 years old, serene, confident, empowered
-- Soft natural light, clean lavender/white backgrounds
-- Brand colors: deep purple, soft rose, clean white
-- NO text, NO logos, NO packaging in the image
-- Landscape 16:9 format, editorial quality
-- Strictly respect brand guidelines for mood, composition and color palette
-- Incorporate validated brand claims into the emotional narrative of the scene
+OUTPUT RULES — your prompt must:
+- Be 3–5 sentences of plain natural English describing the scene
+- Describe the woman, setting, lighting, colors, and emotional mood
+- Mention the split composition or key visual concept if relevant, in visual terms only
+- Include: soft purple and white color palette, natural light, premium editorial feel
+- End with: "No text, no words, no logos, no letters, no typography anywhere in the image."
+- NEVER include any brand name, product name, or company name
 
-Return ONLY the image prompt (4–6 sentences).`;
+Write the prompt now:`;
 
-    return await callClaudeWithTimeout(SYSTEM, [{ role:"user", content: prompt }], 600, 30000);
+    const raw = await callClaudeWithTimeout(SYSTEM, [{ role:"user", content: prompt }], 500, 30000);
+    // Strip any remaining markdown just in case
+    return raw
+      .replace(/\*\*/g, "")
+      .replace(/\*/g, "")
+      .replace(/#{1,6}\s/g, "")
+      .replace(/Sérélys|MENO|Serelys/gi, "")
+      .trim();
   }
 
   // ── Main mockup generation with full asset context ─────────────────────────
@@ -596,9 +603,10 @@ Return ONLY the image prompt (4–6 sentences).`;
       const imageParts  = await prepareImageParts(visualAssets);
       const contentParts = [
         ...(imageParts.length > 0
-          ? [{ text: "Voici les références visuelles de la marque Sérélys® MENO à utiliser comme base stylistique :" }, ...imageParts]
+          ? [{ text: "Use these brand visuals as style and color references only. Do not copy or reproduce any text, logos or product names visible in these reference images:" }, ...imageParts]
           : []),
-        { text: enrichedPrompt }
+        { text: enrichedPrompt },
+        { text: "IMPORTANT: Generate a photorealistic image with absolutely NO text, NO words, NO letters, NO logos, NO brand names, NO typography of any kind anywhere in the image." }
       ];
 
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${GEMINI_KEY}`;
