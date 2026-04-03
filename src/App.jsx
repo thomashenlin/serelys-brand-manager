@@ -1,32 +1,13 @@
 import { useState, useRef, useEffect } from "react";
 import * as mammoth from "mammoth";
 import * as XLSX from "xlsx";
-import html2canvas from "html2canvas";
-
-// ── Netlify version: API key entered by user, stored in localStorage ──────────
-// No CSP restrictions — Pollinations.ai and all external APIs work freely
-
-// Persistent storage shim for Netlify (uses localStorage instead of window.storage)
-const netlifyStorage = {
-  get: async (key) => {
-    try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; }
-  },
-  set: async (key, value) => {
-    try { localStorage.setItem(key, value); return { key, value }; } catch { return null; }
-  },
-  delete: async (key) => {
-    try { localStorage.removeItem(key); return { key, deleted: true }; } catch { return null; }
-  },
-  list: async (prefix = "") => {
-    try {
-      const keys = Object.keys(localStorage).filter(k => k.startsWith(prefix));
-      return { keys };
-    } catch { return { keys: [] }; }
-  }
-};
-if (typeof window !== "undefined") window.storage = netlifyStorage;
+// html2canvas and jsPDF loaded dynamically on demand
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
+
+// ─── ENV VARS (Netlify / Vite) ────────────────────────────────────────────────
+const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
+const GEMINI_KEY    = import.meta.env.VITE_GEMINI_API_KEY    || "";
 
 const TASK_TYPES = [
   { id:"pr_text",      label:"Texte PR",          icon:"✦", desc:"Communiqué, article, annonce",
@@ -261,33 +242,31 @@ async function saveAsset(assetId, processed) {
                     b64:processed.b64||null, text:processed.text||null,
                     mediaType:processed.mediaType||null, refOnly:!!processed.refOnly, error:processed.error||null };
   try {
-    await window.storage.set(key, JSON.stringify(payload));
+    localStorage.setItem(key, JSON.stringify(payload));
     return { key, assetId, name:processed.name, type:processed.type, sizeMB:processed.sizeMB, refOnly:!!processed.refOnly };
   } catch(e) {
-    // If storage fails (file too large), save as reference only
     const lite = { assetId, name:processed.name, type:processed.type, sizeMB:processed.sizeMB, b64:null, text:null, refOnly:true };
-    await window.storage.set(key, JSON.stringify(lite));
+    localStorage.setItem(key, JSON.stringify(lite));
     return { key, assetId, name:processed.name, type:processed.type, sizeMB:processed.sizeMB, refOnly:true };
   }
 }
 
 async function loadAsset(entry) {
   try {
-    const r = await window.storage.get(entry.key);
-    return r?.value ? JSON.parse(r.value) : { ...entry, refOnly:true };
+    const val = localStorage.getItem(entry.key);
+    return val ? JSON.parse(val) : { ...entry, refOnly:true };
   } catch { return { ...entry, refOnly:true }; }
 }
 
 async function deleteAsset(key) {
-  try { await window.storage.delete(key); } catch {}
+  try { localStorage.removeItem(key); } catch {}
 }
 
-async function callClaude(system, messages, maxTokens=1800, apiKey="") {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
+async function callClaude(system, messages, maxTokens=1800) {
+  const res  = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST", headers:{
+      "Content-Type":"application/json",
+      "x-api-key": ANTHROPIC_KEY,
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true"
     },
@@ -354,8 +333,6 @@ export default function App() {
   const [promptSaved,setPromptSaved]   = useState(false);
   const [geminiApiKey,setGeminiApiKey] = useState("");
   const [geminiKeySaved,setGeminiKeySaved] = useState(false);
-  const [anthropicKey,setAnthropicKey] = useState(() => localStorage.getItem("serelys_anthropic_key") || "");
-  const [anthropicKeyInput,setAnthropicKeyInput] = useState("");
   const [storageReady,setReady]  = useState(false);
   const [uploadStatus,setUpSt]   = useState({}); // { assetId: "uploading"|"done"|"error" }
   const [saveStatus,setSaveSt]   = useState("");
@@ -385,26 +362,24 @@ export default function App() {
 
   // Load manifest + history + prompt
   useEffect(() => {
-    (async () => {
-      try { const r=await window.storage.get(KEY_MANIFEST); if(r?.value) setManifest(JSON.parse(r.value)||[]); } catch {}
-      try { const r=await window.storage.get(KEY_HISTORY);  if(r?.value) setHistory(JSON.parse(r.value)||[]); }  catch {}
-      try { const r=await window.storage.get(KEY_PROMPT);   if(r?.value) setCustomPrompt(r.value); }             catch {}
-      try { const r=await window.storage.get(KEY_GEMINI);   if(r?.value) setGeminiApiKey(r.value); }             catch {}
-      setReady(true);
-    })();
+    try { const v=localStorage.getItem(KEY_MANIFEST); if(v) setManifest(JSON.parse(v)||[]); } catch {}
+    try { const v=localStorage.getItem(KEY_HISTORY);  if(v) setHistory(JSON.parse(v)||[]); }  catch {}
+    try { const v=localStorage.getItem(KEY_PROMPT);   if(v) setCustomPrompt(v); }             catch {}
+    try { const v=localStorage.getItem(KEY_GEMINI);   if(v) setGeminiApiKey(v); }             catch {}
+    setReady(true);
   },[]);
 
-  async function persistManifest(m) {
-    try { await window.storage.set(KEY_MANIFEST, JSON.stringify(m)); } catch {}
+  function persistManifest(m) {
+    try { localStorage.setItem(KEY_MANIFEST, JSON.stringify(m)); } catch {}
   }
-  async function persistHistory(h) {
-    try { await window.storage.set(KEY_HISTORY, JSON.stringify(h)); } catch {}
+  function persistHistory(h) {
+    try { localStorage.setItem(KEY_HISTORY, JSON.stringify(h)); } catch {}
   }
-  async function persistPrompt(p) {
-    try { await window.storage.set(KEY_PROMPT, p); setPromptSaved(true); setTimeout(()=>setPromptSaved(false),2500); } catch {}
+  function persistPrompt(p) {
+    try { localStorage.setItem(KEY_PROMPT, p); setPromptSaved(true); setTimeout(()=>setPromptSaved(false),2500); } catch {}
   }
-  async function persistGeminiKey(k) {
-    try { await window.storage.set(KEY_GEMINI, k); setGeminiKeySaved(true); setTimeout(()=>setGeminiKeySaved(false),2500); } catch {}
+  function persistGeminiKey(k) {
+    try { localStorage.setItem(KEY_GEMINI, k); setGeminiKeySaved(true); setTimeout(()=>setGeminiKeySaved(false),2500); } catch {}
   }
 
   async function handleFiles(assetId, files, multi) {
@@ -444,33 +419,231 @@ export default function App() {
   const assetCount = [...new Set(manifest.map(e=>e.assetId))].length;
   const canGenerate = selectedTask && brief.trim().length>15 && phase==="idle";
 
-  // ── Generate a real HTML/CSS ad mockup via Claude ─────────────────────────
-  async function generateHtmlMockup(artDirection, idx) {
-    const colors = ["#E8728A","#7B4EA0","#5AB8A0"][idx % 3]; // accent varies per variant
-    const prompt = `You are an expert HTML/CSS pharmaceutical advertisement designer.
+  function safeJsonParse(raw) {
+    try { return JSON.parse(raw); } catch { return null; }
+  }
 
-Create a COMPLETE, self-contained HTML ad mockup for Sérélys MENO based on this creative direction:
-${artDirection.slice(0, 700)}
+  function escapeXml(str="") {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+  }
 
-STRICT requirements:
-- Return ONLY valid HTML starting with <!DOCTYPE html> — no markdown, no explanation
-- Inline CSS only — zero external resources, zero external fonts, zero images
-- Container: exactly 600px wide × 400px tall, overflow hidden
-- Brand colors: primary purple #7B4EA0, accent ${colors}, white #FFFFFF, light bg #F8F4FF
-- Use system fonts: Georgia or serif for headlines, Arial or sans-serif for body
-- Include: bold headline, short body copy (2-3 lines), "Non hormonal · 1 gélule/jour" badge, product name "Sérélys® MENO" styled prominently, CTA button
-- Professional clean pharmaceutical ad aesthetic — no borders on the outer container
-- French language`;
+  function sanitizeTextForSvg(str="", maxLen=220) {
+    return String(str)
+      .replace(/\s+/g, " ")
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .trim()
+      .slice(0, maxLen);
+  }
 
-    const raw = await callClaude(
-      "You are an expert HTML/CSS designer. Return ONLY complete HTML code, no markdown, no backticks.",
-      [{ role:"user", content:prompt }],
-      2000, anthropicKey
-    );
-    // Extract HTML robustly
-    const clean = raw.replace(/```html?/gi,"").replace(/```/g,"").trim();
-    const match = clean.match(/<!DOCTYPE html>[\s\S]*/i) || clean.match(/<html[\s\S]*/i);
-    return match ? match[0] : clean;
+  function wrapSvgText(text="", maxChars=34, maxLines=3) {
+    const words = sanitizeTextForSvg(text, 280).split(" ").filter(Boolean);
+    if (!words.length) return ["Sérélys® MENO"];
+    const lines = [];
+    let current = "";
+    for (const word of words) {
+      const test = current ? `${current} ${word}` : word;
+      if (test.length <= maxChars) {
+        current = test;
+      } else {
+        if (current) lines.push(current);
+        current = word;
+        if (lines.length >= maxLines - 1) break;
+      }
+    }
+    if (current && lines.length < maxLines) lines.push(current);
+    if (words.join(" ").length > lines.join(" ").length) {
+      lines[lines.length - 1] = `${lines[lines.length - 1].replace(/[.,;:!?-]?\s*$/, "")}…`;
+    }
+    return lines.map(line => escapeXml(line));
+  }
+
+  function extractMockupFieldsFromDirection(artDirection="") {
+    const clean = sanitizeTextForSvg(artDirection, 900);
+    const sentences = clean
+      .split(/(?<=[.!?])\s+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    const headlineSeed =
+      sentences.find(s => s.length >= 28 && s.length <= 95) ||
+      clean.split(":").pop()?.trim() ||
+      clean ||
+      "Traverser la ménopause avec sérénité";
+
+    const headline = headlineSeed
+      .replace(/^concept\s*\/?\s*idée de départ\s*:/i, "")
+      .replace(/^message principal à faire passer\s*:/i, "")
+      .replace(/^direction artistique\s*:/i, "")
+      .trim();
+
+    const subline =
+      sentences.find(s => s !== headlineSeed && s.length >= 30 && s.length <= 130) ||
+      "Une approche claire, douce et rassurante pour valoriser l’accompagnement en pharmacie.";
+
+    let cta = "Demandez conseil à votre pharmacien";
+    const ctaMatch = clean.match(/(?:cta|call to action|appel à l'action)\s*:\s*([^.;\n]+)/i);
+    if (ctaMatch?.[1]) cta = ctaMatch[1].trim();
+
+    return {
+      headline: sanitizeTextForSvg(headline, 120),
+      subline: sanitizeTextForSvg(subline, 160),
+      cta: sanitizeTextForSvg(cta, 60),
+      badge: "Non hormonal",
+      pill: "1 gélule / jour",
+      brand: "Sérélys® MENO"
+    };
+  }
+
+  async function generateImagenPrompt(artDirection) {
+    const SYSTEM = "You are an expert at writing image generation prompts for pharmaceutical advertising. Return only the prompt text, no explanation, no markdown.";
+    const prompt = `Write a detailed image generation prompt for Google Imagen 3 based on this creative direction for Sérélys® MENO, a Swiss non-hormonal menopause supplement.
+
+Creative direction:
+${artDirection.slice(0, 900)}
+
+Rules:
+- Photorealistic advertising visual, Swiss pharmaceutical brand
+- Warm, elegant, empowering mood — women 45-55 years old
+- Clean white/soft lavender backgrounds, natural light
+- NO text overlays, NO logos, NO typography in the image
+- Focus on: serene woman, nature, wellbeing, softness, confidence
+- Style: premium pharmaceutical advertising photography
+- Aspect ratio: wide landscape (16:9)
+- High quality, editorial feel
+
+Return ONLY the image prompt (2-4 sentences max).`;
+    return await callClaudeWithTimeout(SYSTEM, [{ role:"user", content:prompt }], 300, 20000);
+  }
+
+  async function generateRichSvgMockup(artDirection) {
+    const SYSTEM = `You are an expert SVG designer for premium pharmaceutical advertising.
+Return ONLY raw SVG code starting with <svg. No markdown, no backticks, no explanation.`;
+
+    const prompt = `Create a premium Swiss pharmaceutical ad SVG for Sérélys® MENO.
+Creative direction: ${artDirection.slice(0, 400)}
+
+REQUIREMENTS — viewBox="0 0 680 400" width="680" height="400" xmlns="http://www.w3.org/2000/svg"
+Colors: bg #F8F4FF, purple #2D1A4A, accent #E8728A, lavender #8B5AC8
+Must include:
+1. <defs> with 2 linearGradients (bg gradient + accent gradient)
+2. Background rect with gradient fill
+3. 4-6 decorative ellipses/circles (botanical feel, semi-transparent, various purples/roses)
+4. Top bar rect fill="#2D1A4A" with brand name "Sérélys® MENO" in white serif
+5. Large headline text (28px, Georgia, #2D1A4A, max 40 chars, from creative direction)
+6. Subline text (14px, italic, #5A3A7A, max 60 chars)
+7. Accent line rect (60x3px, fill="#E8728A")
+8. Badge: rounded rect + "Non hormonal" text (white on #8B5AC8)
+9. CTA button: rounded rect fill="#E8728A" + white bold text
+10. Bottom strip rect fill="#2D1A4A" with tagline
+
+Keep it under 120 lines. Close ALL tags properly. End with </svg>.`;
+
+    const raw = await callClaudeWithTimeout(SYSTEM, [{role:"user", content:prompt}], 3500, 45000);
+
+    const svgStart = raw.indexOf("<svg");
+    if (svgStart === -1) throw new Error("Claude n'a pas renvoyé de SVG.");
+    let svg = raw.slice(svgStart);
+
+    // Auto-repair: ensure </svg> closes the tag
+    if (!svg.includes("</svg>")) {
+      // Close any open defs/g tags before closing svg
+      if (svg.includes("<defs") && !svg.includes("</defs>")) svg += "</defs>";
+      if ((svg.match(/<g/g)||[]).length > (svg.match(/<\/g>/g)||[]).length) svg += "</g>";
+      svg += "</svg>";
+    } else {
+      svg = svg.slice(0, svg.lastIndexOf("</svg>") + 6);
+    }
+
+    // Security sanitization
+    svg = svg.replace(/<script[\s\S]*?<\/script>/gi, "");
+    svg = svg.replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
+    if (!svg.includes('xmlns=')) svg = svg.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+
+    return svg;
+  }
+
+  function buildSvgMockup(spec={}, artDirection="") {
+    const fallback = extractMockupFieldsFromDirection(artDirection);
+    const headline = sanitizeTextForSvg(spec.headline || fallback.headline, 120);
+    const subline  = sanitizeTextForSvg(spec.subline  || fallback.subline, 160);
+    const cta      = sanitizeTextForSvg(spec.cta      || fallback.cta, 60);
+    const accent   = /^#([0-9a-f]{6})$/i.test(spec.accentColor || "") ? spec.accentColor : "#E8728A";
+    const mood     = sanitizeTextForSvg(spec.mood || "Apaisant et rassurant", 28);
+    const layout   = sanitizeTextForSvg(spec.layoutNote || "Clarté premium", 28);
+
+    const headlineLines = wrapSvgText(headline, 30, 3);
+    const sublineLines  = wrapSvgText(subline, 52, 3);
+    const ctaEsc        = escapeXml(cta);
+    const moodEsc       = escapeXml(mood);
+    const layoutEsc     = escapeXml(layout);
+    const brandEsc      = escapeXml(fallback.brand);
+    const badgeEsc      = escapeXml(fallback.badge);
+    const pillEsc       = escapeXml(fallback.pill);
+
+    const headlineTspans = headlineLines
+      .map((line, i) => `<tspan x="34" dy="${i===0 ? 0 : 30}">${line}</tspan>`)
+      .join("");
+    const sublineTspans = sublineLines
+      .map((line, i) => `<tspan x="34" dy="${i===0 ? 0 : 20}">${line}</tspan>`)
+      .join("");
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="580" height="380" viewBox="0 0 580 380" role="img" aria-label="${brandEsc}">
+  <rect width="580" height="380" rx="0" fill="#F8F4FF"/>
+  <rect x="0" y="0" width="580" height="56" fill="#7B4EA0"/>
+  <text x="24" y="34" fill="#FFFFFF" font-family="Georgia, serif" font-size="19" font-weight="700">${brandEsc}</text>
+  <rect x="454" y="14" width="102" height="28" rx="14" fill="#FFFFFF"/>
+  <text x="505" y="32" text-anchor="middle" fill="#7B4EA0" font-family="Arial, sans-serif" font-size="12" font-weight="700">${badgeEsc}</text>
+
+  <text x="34" y="108" fill="#2D1A4A" font-family="Georgia, serif" font-size="28" font-weight="700">${headlineTspans}</text>
+  <rect x="34" y="206" width="64" height="4" rx="2" fill="${accent}"/>
+  <text x="34" y="236" fill="#5A4A7A" font-family="Arial, sans-serif" font-size="15" font-style="italic">${sublineTspans}</text>
+
+  <rect x="34" y="282" width="158" height="30" rx="15" fill="#FFFFFF" stroke="#E5D8F4"/>
+  <text x="113" y="301" text-anchor="middle" fill="#7B4EA0" font-family="Arial, sans-serif" font-size="12" font-weight="700">${pillEsc}</text>
+
+  <rect x="374" y="270" width="172" height="42" rx="21" fill="${accent}"/>
+  <text x="460" y="296" text-anchor="middle" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="12.5" font-weight="700">${ctaEsc}</text>
+
+  <circle cx="506" cy="126" r="26" fill="#FFFFFF" opacity="0.98"/>
+  <circle cx="506" cy="126" r="16" fill="${accent}" opacity="0.18"/>
+  <circle cx="506" cy="126" r="7" fill="${accent}" opacity="0.45"/>
+
+  <rect x="0" y="326" width="580" height="54" fill="#6A3A90"/>
+  <text x="34" y="348" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="12" font-weight="700">${ctaEsc} →</text>
+  <text x="546" y="348" text-anchor="end" fill="#E8D9F5" font-family="Arial, sans-serif" font-size="10">${moodEsc} · ${layoutEsc}</text>
+</svg>`;
+  }
+
+  function validateSvg(svgString) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgString, "image/svg+xml");
+    const parserError = doc.querySelector("parsererror");
+    if (parserError) {
+      throw new Error("SVG invalide : " + parserError.textContent.slice(0, 180));
+    }
+    const svg = doc.documentElement;
+    if (!svg || svg.nodeName.toLowerCase() !== "svg") {
+      throw new Error("Le document généré n'est pas un SVG.");
+    }
+    return svg.outerHTML;
+  }
+
+  function normalizeSvg(svgString) {
+    let s = String(svgString || "").trim();
+    if (!s.startsWith("<svg")) throw new Error("Le mockup SVG est vide ou invalide.");
+    if (!s.includes('xmlns=')) s = s.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+    if (!s.includes('width=')) s = s.replace("<svg", '<svg width="580"');
+    if (!s.includes('height=')) s = s.replace("<svg", '<svg height="380"');
+    if (!s.includes('viewBox=')) s = s.replace("<svg", '<svg viewBox="0 0 580 380"');
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, "");
+    s = s.replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
+    return validateSvg(s);
   }
 
   async function handleGenerate() {
@@ -483,7 +656,11 @@ STRICT requirements:
     try {
       const loaded = await Promise.all(manifest.map(loadAsset));
       const fullSystem = customPrompt.trim()
-        ? `${SYSTEM_PROMPT}\n\n---\nINSTRUCTIONS SUPPLÉMENTAIRES (priorité haute) :\n${customPrompt}`
+        ? `${SYSTEM_PROMPT}
+
+---
+INSTRUCTIONS SUPPLÉMENTAIRES (priorité haute) :
+${customPrompt}`
         : SYSTEM_PROMPT;
 
       // ── CALL 1 : text variants ────────────────────────────────────────────
@@ -500,7 +677,7 @@ STRICT requirements:
       ].filter(Boolean).join("\n");
 
       const textContent = await buildAPIContent(textPrompt, loaded);
-      const textRaw     = await callClaude(fullSystem, [{role:"user",content:textContent}], 2000, anthropicKey);
+      const textRaw     = await callClaude(fullSystem, [{role:"user",content:textContent}], 2000);
       const parsed      = parseVariants(textRaw);
       if (!parsed.length) { setPhase("idle"); setGenError("Aucune variante générée. Réessayez."); return; }
 
@@ -513,7 +690,13 @@ STRICT requirements:
       let comp = [];
       try {
         const compRaw = await callClaude(fullSystem,[{role:"user",
-          content:`Check this Sérélys text for Swiss HMG/LPTh compliance.\n---V1---\n${parsed[0]}\nReturn ONLY:\n---C1---\nSTATUS: OK|ATTENTION|ALERTE\nNOTES: [1 phrase]`}], 400, anthropicKey);
+          content:`Check this Sérélys text for Swiss HMG/LPTh compliance.
+---V1---
+${parsed[0]}
+Return ONLY:
+---C1---
+STATUS: OK|ATTENTION|ALERTE
+NOTES: [1 phrase]`}]);
         comp = parseCompliance(compRaw);
         setCompliance(comp);
       } catch {}
@@ -563,10 +746,10 @@ STRICT requirements:
       return;
     }
     const LABELS = [
-      t("Lecture de la direction artistique…","Kreativrichtung wird gelesen…"),
-      t("Construction du layout HTML…","HTML-Layout wird aufgebaut…"),
-      t("Application du branding Sérélys…","Sérélys-Branding wird angewendet…"),
-      t("Finalisation du code…","Code wird finalisiert…"),
+      t("Préparation de la requête…","Anfrage wird vorbereitet…"),
+      t("Claude rédige le prompt image…","Claude erstellt den Bild-Prompt…"),
+      t("Imagen 3 génère le visuel…","Imagen 3 generiert das Visual…"),
+      t("Finalisation de l'image…","Bild wird abgeschlossen…"),
     ];
     progressRef.current = { active:true, pct:0, labelIdx:0 };
     setMockupStep({ pct:0, label: LABELS[0] });
@@ -595,7 +778,7 @@ STRICT requirements:
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": anthropicKey,
+          "x-api-key": ANTHROPIC_KEY,
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true"
         },
@@ -613,159 +796,158 @@ STRICT requirements:
     }
   }
 
-  // ── Generate image prompt via Claude, then real AI image via Pollinations ────
-  // On Netlify (real browser), fetch to external APIs works freely — no CSP
-  async function generateAdSvg(artDirection) {
-    // Step 1: Claude generates an optimised English prompt
-    const promptRaw = await callClaudeWithTimeout(
-      "You are an expert AI image prompt engineer. Return ONLY the prompt text, no preamble.",
-      [{
-        role: "user",
-        content:
-`Write an image generation prompt for a Sérélys® MENO pharmaceutical ad.
-Style: high-end French pharmacy lifestyle photography, soft purple and rose tones, elegant, feminine, empowering.
-Creative direction: ${artDirection.slice(0, 400)}
-Max 100 words, English only, no brand names, no text overlays.`
-      }],
-      150,
-      20000
-    );
-    const imagePrompt = promptRaw.replace(/```/g,"").trim()
-      + ", soft purple tones, rose pink accents, clean elegant pharmaceutical lifestyle, high quality 4k";
-
-    // Step 2: Fetch from Pollinations.ai (works freely in real browser)
-    const encoded = encodeURIComponent(imagePrompt);
-    const seed = Math.floor(Math.random() * 9999);
-    const url = `https://image.pollinations.ai/prompt/${encoded}?width=580&height=380&model=flux&nologo=true&seed=${seed}`;
-
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Pollinations error: ${res.status}`);
-    const blob = await res.blob();
-
-    // Return as data URL for display and export
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload  = () => resolve({ type: "image", dataUrl: reader.result, prompt: imagePrompt });
-      reader.onerror = () => reject(new Error("FileReader failed"));
-      reader.readAsDataURL(blob);
-    });
-  }
-
   async function handleGenerateMockups() {
     if (mockupPhase === "loading") return;
+    if (!GEMINI_KEY) {
+      setMockups(prev => ({...prev, [activeVar]: {imgB64:null, error:true, errorMsg: t("Variable VITE_GEMINI_API_KEY manquante dans .env","VITE_GEMINI_API_KEY fehlt in .env")}}));
+      setMockupPhase("done"); return;
+    }
     const idx = activeVar;
     progressRef.current.active = false;
     setMockupPhase("loading");
     setExportPhase(""); setExportError("");
 
-    const artDirection = (editedVariant || variants[idx] || "").slice(0, 700) || "Sérélys MENO — complément alimentaire non hormonal pour la ménopause.";
+    const artDirection = (editedVariant || variants[idx] || "").slice(0, 900) || "Sérélys MENO — complément alimentaire non hormonal pour la ménopause.";
 
     try {
-      const result = await generateAdSvg(artDirection);
+      // Step 1 — Claude génère un prompt photo optimisé pour Imagen 3
+      setMockupStep({pct:25, label: t("Claude rédige le prompt image…","Claude erstellt den Bild-Prompt…")});
+      const imagenPrompt = await generateImagenPrompt(artDirection);
+
+      // Step 2 — Gemini Imagen 3 génère la photo
+      setMockupStep({pct:60, label: t("Imagen 3 génère le visuel…","Imagen 3 generiert das Visual…")});
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${GEMINI_KEY}`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instances: [{ prompt: imagenPrompt }],
+          parameters: { sampleCount: 1, aspectRatio: "16:9" }
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(`Gemini : ${data.error.message}`);
+      const imgB64 = data.predictions?.[0]?.bytesBase64Encoded;
+      if (!imgB64) throw new Error(t("Aucune image retournée. Vérifiez votre clé Gemini et l'accès à Imagen 3.","Kein Bild zurückgegeben. Bitte Gemini-Schlüssel prüfen."));
 
       progressRef.current.active = false;
-      setMockupStep({pct:100, label: t("Image générée ✓","Bild generiert ✓")});
-      setMockups(prev => ({...prev, [idx]: {
-        svgString: result.dataUrl,   // data URL of the real AI image
-        imagePrompt: result.prompt,
-        isImage: true,
-        error: false, errorMsg: ""
-      }}));
+      setMockupStep({pct:100, label: t("Visuel créé ✓","Visual erstellt ✓")});
+      setMockups(prev => ({...prev, [idx]: {imgB64, imagenPrompt, error:false, errorMsg:""}}));
       setMockupPhase("done");
     } catch(err) {
       progressRef.current.active = false;
       setMockupStep({pct:100, label: t("Erreur","Fehler")});
-      setMockups(prev => ({...prev, [idx]: {svgString:null, error:true, errorMsg:err.message}}));
+      setMockups(prev => ({...prev, [idx]: {imgB64:null, error:true, errorMsg:err.message}}));
       setMockupPhase("done");
     }
   }
 
-  const mockupImgRef = useRef(null);
+  // ── Native JPEG export — no external libs ──────────────────────────────────
+  async function svgToCanvas(svgString) {
+    return new Promise((resolve, reject) => {
+      let fixed = "";
+      try {
+        fixed = normalizeSvg(svgString);
+      } catch (e) {
+        reject(e);
+        return;
+      }
+
+      const blob = new Blob([fixed], {type: 'image/svg+xml;charset=utf-8'});
+      const blobUrl = URL.createObjectURL(blob);
+
+      const drawToCanvas = (imgEl) => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = 1160;
+        canvas.height = 760;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#F8F4FF';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(imgEl, 0, 0, 1160, 760);
+        return canvas;
+      };
+
+      const img = new Image();
+      img.decoding = "sync";
+      img.onload = () => {
+        try {
+          const canvas = drawToCanvas(img);
+          URL.revokeObjectURL(blobUrl);
+          resolve(canvas);
+        } catch(e) {
+          URL.revokeObjectURL(blobUrl);
+          reject(new Error('Canvas draw failed: ' + e.message));
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(blobUrl);
+        try {
+          const b64 = btoa(unescape(encodeURIComponent(fixed)));
+          const img2 = new Image();
+          img2.decoding = "sync";
+          img2.onload = () => {
+            try {
+              resolve(drawToCanvas(img2));
+            } catch (e) {
+              reject(new Error('Canvas draw failed: ' + e.message));
+            }
+          };
+          img2.onerror = () => reject(new Error("Le SVG n'a pas pu être chargé comme image. Vérifiez le contenu texte du mockup."));
+          img2.src = `data:image/svg+xml;base64,${b64}`;
+        } catch(e2) {
+          reject(new Error('SVG render failed: ' + e2.message));
+        }
+      };
+      img.src = blobUrl;
+    });
+  }
+
+  // Minimal PDF from JPEG data — no external library
 
   async function exportVisual(format) {
     const mockup = mockups[activeVar];
-    if (!mockup?.svgString) {
-      setExportError(t("Visuel non disponible","Visual nicht verfügbar"));
+    if (!mockup?.imgB64) {
+      setExportError(t("Image non disponible","Bild nicht verfügbar"));
       setExportPhase("error"); return;
     }
     setExportPhase("exporting"); setExportError("");
     try {
-      const dataUrl = mockup.svgString; // already a data URL (JPEG from Pollinations)
-
+      const dataUrl = `data:image/png;base64,${mockup.imgB64}`;
       if (format === "jpeg") {
-        const a = Object.assign(document.createElement("a"), {
-          href: dataUrl, download: "serelys-visuel.jpg"
-        });
+        const img = new Image();
+        await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=dataUrl; });
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle="#FFFFFF"; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(img,0,0);
+        const a = Object.assign(document.createElement("a"),{href:canvas.toDataURL("image/jpeg",0.95), download:"serelys-visuel.jpg"});
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setExportPhase("done");
       } else {
-        // PDF via print window with the image
-        const win = window.open("", "_blank", "width=800,height=600");
-        if (!win) { setExportError(t("Popups bloqués","Popups blockiert")); setExportPhase("error"); return; }
-        win.document.write(`<!DOCTYPE html><html><head><title>Sérélys</title>
-<style>*{margin:0;padding:0;}body{background:#fff;}img{display:block;width:100%;max-width:100%;}
-@media print{@page{size:landscape;margin:0;}body{margin:0;}}</style></head><body>
-<img src="${dataUrl}"/>
-<script>window.onload=function(){setTimeout(function(){window.print();},500);};<\/script>
-</body></html>`);
+        const win = window.open("","_blank","width=700,height=500");
+        if(!win){setExportError(t("Popups bloqués","Popups blockiert"));setExportPhase("error");return;}
+        win.document.write(`<!DOCTYPE html><html><head><title>Sérélys — PDF</title>
+<style>*{margin:0;padding:0;}body{background:white;display:flex;align-items:center;justify-content:center;min-height:100vh;}img{max-width:100%;height:auto;}@media print{@page{size:landscape;margin:10mm;}}</style></head><body>
+<img src="${dataUrl}" alt="Sérélys"/>
+<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},600);});<\/script></body></html>`);
         win.document.close();
         setExportPhase("done");
       }
-    } catch(e) {
-      setExportError(e.message); setExportPhase("error");
-    }
+    } catch(err){setExportError(err.message);setExportPhase("error");}
   }
 
   async function handleRefine() {
     if (!followUp.trim()||refining) return;
     setRefining(true);
     try {
-      const r=await callClaude(SYSTEM_PROMPT,[{role:"user",content:`Texte actuel:\n\n${variants[activeVar]}\n\nInstruction: ${followUp}\n\nRetourne uniquement le texte modifié.`}], 800, anthropicKey);
+      const r=await callClaude(SYSTEM_PROMPT,[{role:"user",content:`Texte actuel:\n\n${variants[activeVar]}\n\nInstruction: ${followUp}\n\nRetourne uniquement le texte modifié.`}]);
       const u=[...variants]; u[activeVar]=r.trim(); setVariants(u); setFollowUp("");
     } catch {}
     setRefining(false);
   }
 
   const histEntry = history.find(h=>h.id===selectedHistId);
-
-  // ── API Key gate — shown on first launch if no key stored ─────────────────
-  if (!anthropicKey) {
-    return (
-      <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#f8f4ff,#fff0f6)",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Nunito Sans','Helvetica Neue',sans-serif"}}>
-        <style>{CSS}</style>
-        <div style={{background:"white",borderRadius:20,padding:"48px 44px",maxWidth:460,width:"90%",boxShadow:"0 20px 60px rgba(123,78,160,.15)",textAlign:"center"}}>
-          <div style={{width:56,height:56,background:"linear-gradient(135deg,#7b4ea0,#5a2d7a)",borderRadius:16,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
-            <svg width="26" height="26" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="9" stroke="white" strokeWidth="1.5"/><path d="M6 10C6 7 8 5.5 10 5.5C12 5.5 14 7 14 9.5C14 12 12 14 10 14.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><circle cx="10" cy="15.5" r="1" fill="white"/></svg>
-          </div>
-          <div style={{fontFamily:"'Cormorant Garamond',Georgia,serif",fontSize:26,color:"#2d1a4a",marginBottom:6}}>
-            Sérélys <span style={{fontStyle:"italic",color:"#8b5ac8"}}>AI</span> Brand Manager
-          </div>
-          <div style={{fontSize:11,color:"#b8a8cc",letterSpacing:".14em",textTransform:"uppercase",marginBottom:32}}>Switzerland · Powered by Claude</div>
-          <div style={{textAlign:"left",marginBottom:8,fontSize:12,fontWeight:700,color:"#7b4ea0",letterSpacing:".08em",textTransform:"uppercase"}}>
-            Clé API Anthropic
-          </div>
-          <input
-            type="password"
-            placeholder="sk-ant-..."
-            value={anthropicKeyInput}
-            onChange={e=>setAnthropicKeyInput(e.target.value)}
-            onKeyDown={e=>{if(e.key==="Enter"&&anthropicKeyInput.startsWith("sk-ant-")){localStorage.setItem("serelys_anthropic_key",anthropicKeyInput);setAnthropicKey(anthropicKeyInput);}}}
-            style={{width:"100%",padding:"13px 14px",border:"1.5px solid #ede0f8",borderRadius:10,fontSize:13,color:"#3a2050",outline:"none",marginBottom:12,fontFamily:"inherit",background:"#fdfaff",boxSizing:"border-box"}}
-          />
-          <button
-            onClick={()=>{if(anthropicKeyInput.startsWith("sk-ant-")){localStorage.setItem("serelys_anthropic_key",anthropicKeyInput);setAnthropicKey(anthropicKeyInput);}}}
-            disabled={!anthropicKeyInput.startsWith("sk-ant-")}
-            style={{width:"100%",padding:"13px",background:anthropicKeyInput.startsWith("sk-ant-")?"linear-gradient(135deg,#7b4ea0,#9b6ec0)":"#e8e0f0",border:"none",borderRadius:10,color:anthropicKeyInput.startsWith("sk-ant-")?"white":"#b0a0c8",fontSize:13,fontWeight:700,cursor:anthropicKeyInput.startsWith("sk-ant-")?"pointer":"not-allowed",fontFamily:"inherit",transition:"all .2s"}}>
-            Accéder à l'application →
-          </button>
-          <div style={{marginTop:20,fontSize:10,color:"#c0a8d8",lineHeight:1.6}}>
-            Ta clé est stockée localement dans ton navigateur et n'est jamais envoyée ailleurs que vers <strong>api.anthropic.com</strong>.<br/>
-            Obtiens une clé sur <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" style={{color:"#8b5ac8"}}>console.anthropic.com</a>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div style={{minHeight:"100vh",background:"#faf8fc",fontFamily:"'Nunito Sans','Helvetica Neue',sans-serif",color:"#2d1a4a",display:"flex",flexDirection:"column"}}>
@@ -786,9 +968,6 @@ Max 100 words, English only, no brand names, no text overlays.`
           <div className="lang-toggle">
             {["fr","de"].map(l=><button key={l} className={`lang-btn ${uiLang===l?"on":""}`} onClick={()=>setUiLang(l)}>{l.toUpperCase()}</button>)}
           </div>
-          <button onClick={()=>{localStorage.removeItem("serelys_anthropic_key");setAnthropicKey("");}} style={{fontSize:10,background:"none",border:"1px solid #e0d0f0",borderRadius:6,padding:"4px 8px",color:"#b89ad0",cursor:"pointer",fontFamily:"inherit"}}>
-            🔑 Clé API
-          </button>
         </div>
       </div>
 
@@ -869,7 +1048,7 @@ Max 100 words, English only, no brand names, no text overlays.`
                           <button className="gen-mockup-btn" onClick={handleGenerateMockups}>
                             ◈ {t("Générer le mockup visuel","Visuelles Mockup generieren")}
                           </button>
-                          <span className="visual-hint">{t("Génère une publicité HTML brandée pour cette variante","Erstellt eine branded HTML-Anzeige für diese Variante")}</span>
+                          <span className="visual-hint">{t("Claude rédige le prompt · Flux Pro génère la photo AI","Claude schreibt den Prompt · Flux Pro generiert das KI-Foto")}</span>
                         </div>
                       )}
 
@@ -897,12 +1076,26 @@ Max 100 words, English only, no brand names, no text overlays.`
                               ↺ {t("Réessayer","Erneut")}
                             </button>
                           </div>
-                        ) : mockups[activeVar].svgString ? (
-                          <AIImageDisplay
-                            svg={mockups[activeVar].svgString}
-                            onRegenerate={handleGenerateMockups}
-                            t={t}
-                          />
+                        ) : mockups[activeVar].imgB64 ? (
+                          <>
+                            <div style={{width:"100%", lineHeight:0, background:"#F8F4FF"}}>
+                              <img
+                                src={`data:image/png;base64,${mockups[activeVar].imgB64}`}
+                                alt="Sérélys — visuel généré par Imagen 3"
+                                style={{width:"100%", height:"auto", display:"block"}}
+                              />
+                            </div>
+                            {mockups[activeVar].imagenPrompt && (
+                              <div style={{padding:"8px 14px", fontSize:10, color:"#9a78c0", fontStyle:"italic", background:"#faf4ff", borderTop:"1px solid #ede0f8"}}>
+                                🎨 Prompt Imagen 3 : {mockups[activeVar].imagenPrompt.slice(0,180)}…
+                              </div>
+                            )}
+                            <div className="exp-row" style={{padding:"10px 14px 14px"}}>
+                              <button className="exp-btn" onClick={handleGenerateMockups}>
+                                ↺ {t("Regénérer","Neu generieren")}
+                              </button>
+                            </div>
+                          </>
                         ) : null
                       )}
 
@@ -950,7 +1143,7 @@ Max 100 words, English only, no brand names, no text overlays.`
                   )}
 
                   {/* ── Export section — only after mockup is ready ── */}
-                  {isVisualTask && mockupPhase === "done" && mockups[activeVar]?.svgString && (
+                  {isVisualTask && mockupPhase === "done" && mockups[activeVar]?.imgB64 && (
                     <div className="export-block">
                       <div className="export-label">
                         ⬇ {t("Étape suivante — Exporter le visuel","Nächster Schritt — Visual exportieren")}
@@ -1154,28 +1347,6 @@ Max 100 words, English only, no brand names, no text overlays.`
 }
 
 // ─── SUB-COMPONENTS ───────────────────────────────────────────────────────────
-// ── AIImageDisplay — shows real AI-generated image (Pollinations data URL) ────
-function AIImageDisplay({ svg, onRegenerate, t }) {
-  // svgString is actually a data URL (JPEG from Pollinations on Netlify)
-  return (
-    <div>
-      <img
-        src={svg}
-        alt="Sérélys visuel IA"
-        style={{width:"100%", display:"block", borderRadius:"0 0 4px 4px"}}
-      />
-      <div style={{
-        display:"flex", gap:8, padding:"10px 12px",
-        background:"#fdfaff", borderTop:"1px solid #ede0f8"
-      }}>
-        <button className="exp-btn" onClick={onRegenerate}>
-          ↺ {t ? t("Regénérer","Neu") : "Regénérer"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function SelF({label,value,onChange,opts}){return(<div style={{display:"flex",flexDirection:"column",gap:4}}><div style={{fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:"#9a78c0"}}>{label}</div><select className="sel-field" value={value} onChange={e=>onChange(e.target.value)}><option value="">—</option>{opts.map(o=><option key={o}>{o}</option>)}</select></div>);}
 function Spin({c="#8b5ac8",size=14}){return <span style={{display:"inline-block",animation:"spin 1s linear infinite",color:c,fontSize:size,lineHeight:1,marginRight:4}}>◌</span>;}
 function CopyBtn({text,label}){const[d,setD]=useState(false);return <button className="exp-btn primary" onClick={()=>{navigator.clipboard.writeText(text);setD(true);setTimeout(()=>setD(false),2000);}}>{d?`✓ ${label==="Copier"?"Copié":"Kopiert"}`:`⊞ ${label}`}</button>;}
@@ -1225,14 +1396,14 @@ const CSS=`
 .gen-btn{padding:12px;border:none;border-radius:10px;background:linear-gradient(135deg,#7b4ea0,#9b6ec0);color:white;font-size:12px;font-weight:700;letter-spacing:.04em;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px;font-family:inherit;box-shadow:0 3px 14px rgba(123,78,160,.25);}
 .gen-btn:hover:not(.off){transform:translateY(-1px);box-shadow:0 6px 20px rgba(123,78,160,.3);}
 .gen-btn.off{opacity:.35;cursor:not-allowed;transform:none;box-shadow:none;}
-.output-col{display:flex;flex-direction:column;overflow-y:auto;background:#faf8fc;}
+.output-col{display:flex;flex-direction:column;overflow:hidden;background:#faf8fc;}
 .empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:40px;text-align:center;}
 .empty-title{font-family:'Cormorant Garamond',serif;font-size:20px;color:#8b6aaa;font-style:italic;}
 .empty-sub{font-size:12px;color:#c0a8d8;line-height:1.7;max-width:250px;}
 .asset-chip{font-size:11px;color:#2a7a4a;background:#f0faf4;border:1px solid #b8e8cc;border-radius:20px;padding:5px 14px;}
 .hist-chip-link{font-size:11px;color:#7b4ea0;background:#f4eef8;border:1px solid #d8c0f0;border-radius:20px;padding:5px 14px;cursor:pointer;}
 .hist-chip-link:hover{background:#ede0f8;}
-.variants-wrap{display:flex;flex-direction:column;flex:1;min-height:0;}
+.variants-wrap{display:flex;flex-direction:column;flex:1;overflow:hidden;}
 .var-tabs{display:flex;align-items:center;border-bottom:1px solid #ede0f8;padding:0 18px;background:white;flex-shrink:0;}
 .var-tab{display:flex;align-items:center;gap:7px;padding:13px 14px;border:none;background:none;color:#b89ad0;font-size:11px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .15s;font-family:inherit;}
 .var-tab.active{color:#7b4ea0;border-bottom-color:#7b4ea0;}
@@ -1310,7 +1481,7 @@ const CSS=`
 .prompt-reset:hover{border-color:#c8a0e8;color:#7b4ea0;}
 .section-divider{height:1px;background:linear-gradient(90deg,transparent,#ede0f8 30%,#ede0f8 70%,transparent);}
 .assets-files-title{font-size:9px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#b89ad0;margin-bottom:4px;}
-.visual-block{background:white;border:1.5px solid #d8c0f0;border-radius:12px;padding:12px;width:100%;}
+.visual-block{background:white;border:1.5px solid #d8c0f0;border-radius:12px;overflow:hidden;}
 .visual-label{font-size:9px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:#8b5ac8;padding:12px 14px 8px;display:flex;align-items:center;gap:8px;}
 .visual-prompt-badge{background:#f4eef8;color:#8b5ac8;border:1px solid #d8c0f0;border-radius:8px;padding:2px 8px;font-size:9px;}
 .visual-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:44px 20px;color:#b89ad0;font-size:12px;min-height:160px;text-align:center;}
