@@ -500,25 +500,139 @@ export default function App() {
     };
   }
 
-  async function generateImagenPrompt(artDirection) {
-    const SYSTEM = "You are an expert at writing image generation prompts for pharmaceutical advertising. Return only the prompt text, no explanation, no markdown.";
-    const prompt = `Write a detailed image generation prompt for Google Imagen 3 based on this creative direction for Sérélys® MENO, a Swiss non-hormonal menopause supplement.
+  // ── Asset loader helpers ────────────────────────────────────────────────────
+  async function loadAssetsByIds(assetIds) {
+    const entries = manifest.filter(e => assetIds.includes(e.assetId));
+    return await Promise.all(entries.map(loadAsset));
+  }
 
-Creative direction:
-${artDirection.slice(0, 900)}
+  function extractText(assets) {
+    return assets
+      .filter(a => a.text)
+      .map(a => {
+        const label = ASSET_TYPES.find(x => x.id === a.assetId)?.label || a.assetId;
+        return `=== ${label.toUpperCase()} — ${a.name} ===\n${a.text.slice(0, 3000)}`;
+      })
+      .join("\n\n");
+  }
 
-Rules:
-- Photorealistic advertising visual, Swiss pharmaceutical brand
-- Warm, elegant, empowering mood — women 45-55 years old
-- Clean white/soft lavender backgrounds, natural light
-- NO text overlays, NO logos, NO typography in the image
-- Focus on: serene woman, nature, wellbeing, softness, confidence
-- Style: premium pharmaceutical advertising photography
-- Aspect ratio: wide landscape (16:9)
-- High quality, editorial feel
+  async function prepareImageParts(assets) {
+    // Only image-type assets with b64, resize to stay within API limits
+    const imgAssets = assets.filter(a => a.type === "image" && a.b64 && !a.refOnly);
+    const parts = [];
+    for (const a of imgAssets.slice(0, 4)) { // max 4 images to Gemini
+      const label = ASSET_TYPES.find(x => x.id === a.assetId)?.label || a.assetId;
+      const mime  = a.mediaType || mimeFromName(a.name);
+      const safeB64 = await resizeImage(a.b64, mime);
+      const finalMime = safeB64 === a.b64 ? mime : "image/jpeg";
+      parts.push({ text: `[Référence visuelle — ${label} : ${a.name}]` });
+      parts.push({ inlineData: { mimeType: finalMime, data: safeB64 } });
+    }
+    return parts;
+  }
 
-Return ONLY the image prompt (2-4 sentences max).`;
-    return await callClaudeWithTimeout(SYSTEM, [{ role:"user", content:prompt }], 300, 20000);
+  // ── Prompt enrichi avec tous les assets texte ───────────────────────────────
+  async function generateEnrichedPrompt(artDirection, textContext) {
+    const SYSTEM = `You are the senior art director and brand strategist for Sérélys® MENO.
+You write precise Gemini image generation prompts that are deeply on-brand.
+Return ONLY the final image prompt. No explanation, no markdown, no headers.`;
+
+    const prompt = `Generate a Gemini image generation prompt for a Sérélys® MENO advertisement.
+
+CREATIVE DIRECTION:
+${artDirection.slice(0, 600)}
+
+BRAND CONTEXT (use to inform style, tone, claims, visual language):
+${textContext || "Sérélys® MENO — complément alimentaire non hormonal, certifié cliniquement, vendu en pharmacie suisse."}
+
+IMAGE RULES (mandatory):
+- Photorealistic, premium Swiss pharmaceutical advertising
+- Woman 45–55 years old, serene, confident, empowered
+- Soft natural light, clean lavender/white backgrounds
+- Brand colors: deep purple, soft rose, clean white
+- NO text, NO logos, NO packaging in the image
+- Landscape 16:9 format, editorial quality
+- Strictly respect brand guidelines for mood, composition and color palette
+- Incorporate validated brand claims into the emotional narrative of the scene
+
+Return ONLY the image prompt (4–6 sentences).`;
+
+    return await callClaudeWithTimeout(SYSTEM, [{ role:"user", content: prompt }], 600, 30000);
+  }
+
+  // ── Main mockup generation with full asset context ─────────────────────────
+  async function handleGenerateMockups() {
+    if (mockupPhase === "loading") return;
+    if (!GEMINI_KEY) {
+      setMockups(prev => ({...prev, [activeVar]: {imgB64:null, error:true, errorMsg: t("Variable VITE_GEMINI_API_KEY manquante dans .env","VITE_GEMINI_API_KEY fehlt in .env")}}));
+      setMockupPhase("done"); return;
+    }
+    const idx = activeVar;
+    progressRef.current.active = false;
+    setMockupPhase("loading");
+    setExportPhase(""); setExportError("");
+
+    const artDirection = (editedVariant || variants[idx] || "").slice(0, 900)
+      || "Sérélys MENO — complément alimentaire non hormonal pour la ménopause.";
+
+    try {
+      // ── Step 1 : charger les assets ────────────────────────────────────────
+      setMockupStep({pct:15, label: t("Chargement des assets…","Assets werden geladen…")});
+
+      // Assets texte → contexte pour Claude
+      const textAssets = await loadAssetsByIds(["guidelines","claims","livre_marque","pr_ref"]);
+      const textContext = extractText(textAssets);
+
+      // Assets visuels → références pour Gemini
+      const visualAssets = await loadAssetsByIds(["kv","packshots","logo"]);
+
+      // ── Step 2 : Claude enrichit le prompt avec tout le contexte ──────────
+      setMockupStep({pct:35, label: t("Claude analyse les assets et rédige le prompt…","Claude analysiert Assets und erstellt Prompt…")});
+      const enrichedPrompt = await generateEnrichedPrompt(artDirection, textContext);
+
+      // ── Step 3 : Gemini reçoit prompt + images de référence ───────────────
+      setMockupStep({pct:65, label: t("Gemini génère le visuel avec les références de marque…","Gemini generiert Visual mit Markenreferenzen…")});
+
+      const imageParts  = await prepareImageParts(visualAssets);
+      const contentParts = [
+        ...(imageParts.length > 0
+          ? [{ text: "Voici les références visuelles de la marque Sérélys® MENO à utiliser comme base stylistique :" }, ...imageParts]
+          : []),
+        { text: enrichedPrompt }
+      ];
+
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${GEMINI_KEY}`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: contentParts }],
+          generationConfig: { responseModalities: ["IMAGE", "TEXT"] }
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(`Gemini : ${data.error.message}`);
+      const resParts = data.candidates?.[0]?.content?.parts || [];
+      const imgPart  = resParts.find(p => p.inlineData?.mimeType?.startsWith("image/"));
+      if (!imgPart) throw new Error(t("Aucune image retournée. Vérifiez votre clé et votre quota Gemini.","Kein Bild zurückgegeben."));
+      const imgB64 = imgPart.inlineData.data;
+
+      const assetsUsed = [
+        ...textAssets.filter(a=>a.text).map(a=>ASSET_TYPES.find(x=>x.id===a.assetId)?.label||a.assetId),
+        ...visualAssets.filter(a=>a.b64&&a.type==="image").map(a=>ASSET_TYPES.find(x=>x.id===a.assetId)?.label||a.assetId)
+      ].filter(Boolean);
+
+      progressRef.current.active = false;
+      setMockupStep({pct:100, label: t("Visuel créé ✓","Visual erstellt ✓")});
+      setMockups(prev => ({...prev, [idx]: {imgB64, enrichedPrompt, assetsUsed, error:false, errorMsg:""}}));
+      setMockupPhase("done");
+
+    } catch(err) {
+      progressRef.current.active = false;
+      setMockupStep({pct:100, label: t("Erreur","Fehler")});
+      setMockups(prev => ({...prev, [idx]: {imgB64:null, error:true, errorMsg:err.message}}));
+      setMockupPhase("done");
+    }
   }
 
   async function generateRichSvgMockup(artDirection) {
@@ -796,54 +910,6 @@ NOTES: [1 phrase]`}]);
     }
   }
 
-  async function handleGenerateMockups() {
-    if (mockupPhase === "loading") return;
-    if (!GEMINI_KEY) {
-      setMockups(prev => ({...prev, [activeVar]: {imgB64:null, error:true, errorMsg: t("Variable VITE_GEMINI_API_KEY manquante dans .env","VITE_GEMINI_API_KEY fehlt in .env")}}));
-      setMockupPhase("done"); return;
-    }
-    const idx = activeVar;
-    progressRef.current.active = false;
-    setMockupPhase("loading");
-    setExportPhase(""); setExportError("");
-
-    const artDirection = (editedVariant || variants[idx] || "").slice(0, 900) || "Sérélys MENO — complément alimentaire non hormonal pour la ménopause.";
-
-    try {
-      // Step 1 — Claude génère un prompt photo optimisé pour Imagen 3
-      setMockupStep({pct:25, label: t("Claude rédige le prompt image…","Claude erstellt den Bild-Prompt…")});
-      const imagenPrompt = await generateImagenPrompt(artDirection);
-
-      // Step 2 — Gemini génère l'image (modèle natif image generation)
-      setMockupStep({pct:60, label: t("Gemini génère le visuel…","Gemini generiert das Visual…")});
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${GEMINI_KEY}`;
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: imagenPrompt }] }],
-          generationConfig: { responseModalities: ["IMAGE", "TEXT"] }
-        })
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(`Gemini : ${data.error.message}`);
-      const parts = data.candidates?.[0]?.content?.parts || [];
-      const imgPart = parts.find(p => p.inlineData?.mimeType?.startsWith("image/"));
-      if (!imgPart) throw new Error(t("Aucune image retournée par Gemini. Vérifiez votre clé API.","Kein Bild von Gemini zurückgegeben."));
-      const imgB64 = imgPart.inlineData.data;
-
-      progressRef.current.active = false;
-      setMockupStep({pct:100, label: t("Visuel créé ✓","Visual erstellt ✓")});
-      setMockups(prev => ({...prev, [idx]: {imgB64, imagenPrompt, error:false, errorMsg:""}}));
-      setMockupPhase("done");
-    } catch(err) {
-      progressRef.current.active = false;
-      setMockupStep({pct:100, label: t("Erreur","Fehler")});
-      setMockups(prev => ({...prev, [idx]: {imgB64:null, error:true, errorMsg:err.message}}));
-      setMockupPhase("done");
-    }
-  }
-
   // ── Native JPEG export — no external libs ──────────────────────────────────
   async function svgToCanvas(svgString) {
     return new Promise((resolve, reject) => {
@@ -1050,7 +1116,7 @@ NOTES: [1 phrase]`}]);
                           <button className="gen-mockup-btn" onClick={handleGenerateMockups}>
                             ◈ {t("Générer le mockup visuel","Visuelles Mockup generieren")}
                           </button>
-                          <span className="visual-hint">{t("Claude rédige le prompt · Flux Pro génère la photo AI","Claude schreibt den Prompt · Flux Pro generiert das KI-Foto")}</span>
+                          <span className="visual-hint">{t("Claude analyse tes assets · Gemini génère le visuel on-brand","Claude analysiert Assets · Gemini generiert on-brand Visual")}</span>
                         </div>
                       )}
 
@@ -1087,9 +1153,17 @@ NOTES: [1 phrase]`}]);
                                 style={{width:"100%", height:"auto", display:"block"}}
                               />
                             </div>
-                            {mockups[activeVar].imagenPrompt && (
+                            {mockups[activeVar].enrichedPrompt && (
                               <div style={{padding:"8px 14px", fontSize:10, color:"#9a78c0", fontStyle:"italic", background:"#faf4ff", borderTop:"1px solid #ede0f8"}}>
-                                🎨 Prompt Imagen 3 : {mockups[activeVar].imagenPrompt.slice(0,180)}…
+                                🎨 {t("Prompt enrichi","Angereicherter Prompt")} : {mockups[activeVar].enrichedPrompt.slice(0,200)}…
+                              </div>
+                            )}
+                            {mockups[activeVar].assetsUsed?.length > 0 && (
+                              <div style={{padding:"6px 14px 10px", fontSize:10, color:"#2a7a4a", background:"#f0faf4", borderTop:"1px solid #b8e8cc", display:"flex", gap:6, flexWrap:"wrap", alignItems:"center"}}>
+                                <span style={{fontWeight:700}}>✓ {t("Assets utilisés","Verwendete Assets")} :</span>
+                                {mockups[activeVar].assetsUsed.map((a,i) => (
+                                  <span key={i} style={{background:"#e0f5ea", border:"1px solid #b8e8cc", borderRadius:6, padding:"1px 7px"}}>{a}</span>
+                                ))}
                               </div>
                             )}
                             <div className="exp-row" style={{padding:"10px 14px 14px"}}>
